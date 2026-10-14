@@ -2053,23 +2053,40 @@ install_lumen() {
 		         "O binário do Lumen não é um ELF válido")"
 	fi
 
-	# NixOS has no FHS /lib64/ld-linux..., /usr/lib etc., so this prebuilt ELF
-	# can't load its dynamic linker directly. Move it aside and drop a
-	# steam-run shim in its place: every caller (the slsteam-moon wrapper
-	# execs "$dest/lumen" by convention) keeps working unmodified, now inside
-	# an FHS sandbox. steam-run ships automatically with programs.steam.enable.
+	# NixOS ships no FHS /usr/lib tree, but its base system does provide glibc
+	# with /lib64/ld-linux-x86-64.so.2, and the Lumen sidecar is glibc-only, so
+	# the prebuilt ELF usually runs on the host as-is. Probe before wrapping,
+	# and fall back to the steam-run FHS sandbox only when direct execution
+	# fails.
+	#
+	# Wrapping Lumen unconditionally breaks its CEF peerauth: the sidecar
+	# verifies that whatever listens on Steam's remote-debugging port is the
+	# Steam client by resolving the listener's socket inode through
+	# /proc/net/tcp and then reading /proc/<pid>/exe and /proc/<pid>/fd
+	# symlink targets. Inside steam-run's bwrap user namespace the kernel
+	# denies ptrace-style reads of processes outside the sandbox, so every
+	# check fails and the injector refuses to attach forever (the refusal is
+	# logged to stderr, which the launcher sends to /dev/null, so nothing is
+	# visible). Only wrap when the prebuilt cannot run on the host.
 	if [ "$(get_distro_id)" = "nixos" ]; then
-		command -v steam-run >/dev/null 2>&1 || fail "$(L \
-			"steam-run not found. It ships automatically with programs.steam.enable on NixOS — make sure Steam is enabled and re-run this installer." \
-			"steam-run não encontrado. Ele vem automaticamente com programs.steam.enable no NixOS — confira se a Steam está habilitada e rode o instalador de novo.")"
-		mv -f "$dest/lumen" "$dest/lumen.bin"
-		printf '%s\n' \
-			'#!/usr/bin/env bash' \
-			'exec steam-run "$(dirname "$0")/lumen.bin" "$@"' \
-			> "$dest/lumen"
-		chmod +x "$dest/lumen"
-		log_info "$(L "Wrapped Lumen with steam-run for NixOS" \
-		             "Lumen encapsulado com steam-run para o NixOS")"
+		if ! "$dest/lumen" --help >/dev/null 2>&1; then
+			command -v steam-run >/dev/null 2>&1 || fail "$(L \
+				"steam-run not found. It ships automatically with programs.steam.enable on NixOS — make sure Steam is enabled and re-run this installer." \
+				"steam-run não encontrado. Ele vem automaticamente com programs.steam.enable no NixOS — confira se a Steam está habilitada e rode o instalador de novo.")"
+			mv -f "$dest/lumen" "$dest/lumen.bin"
+			printf '%s\n' \
+				'#!/usr/bin/env bash' \
+				'exec steam-run "$(dirname "$0")/lumen.bin" "$@"' \
+				> "$dest/lumen"
+			chmod +x "$dest/lumen"
+			log_warn "$(L \
+				"Lumen could not run directly on NixOS; wrapped it with steam-run. Note: the FHS sandbox breaks Lumen's peerauth, so the LuaTools UI may not appear." \
+				"O Lumen não rodou diretamente no NixOS; foi encapsulado com steam-run. Nota: a sandbox FHS quebra o peerauth do Lumen, então a UI do LuaTools pode não aparecer.")"
+		else
+			log_info "$(L \
+				"Lumen runs directly on NixOS (glibc-only) — no steam-run sandbox needed." \
+				"O Lumen roda diretamente no NixOS (apenas glibc) — sem sandbox steam-run.")"
+		fi
 	fi
 
 	log_success "$(L "Lumen installed" "Lumen instalado")"
